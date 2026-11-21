@@ -14,7 +14,7 @@ from ...demo_library_hub import demo_library_hub
 
 logger = logging.getLogger(__name__)
 _demo_roster_locks: weakref.WeakValueDictionary[int, asyncio.Lock] = weakref.WeakValueDictionary()
-_DEMO_ROSTER_CACHE_VERSION = 4
+_DEMO_ROSTER_CACHE_VERSION = 5
 
 def _demo_roster_source_fingerprint(demo_path: str) -> tuple[str, int | None, int | None]:
     normalized_path = os.path.normcase(os.path.abspath(os.fspath(demo_path)))
@@ -129,8 +129,6 @@ def _roster_rows_for_api(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not isinstance(raw, dict):
             continue
         name = str(raw.get("name") or raw.get("player_name") or "").strip()
-        if not name:
-            continue
         team = raw.get("team")
         if team is None:
             team = raw.get("team_number")
@@ -154,6 +152,16 @@ def _roster_rows_for_api(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             except (TypeError, ValueError):
                 account_id = None
         user_id = raw.get("user_id")
+        if not name:
+            # Persisted rows can legitimately have an empty nickname while
+            # still carrying a real SteamID.  Do not hide the player from the
+            # library/analysis roster; expose a stable placeholder instead.
+            if steam_id64:
+                name = f"未知玩家 {steam_id64[-8:]}"
+            elif user_id not in (None, ""):
+                name = f"未知玩家 UID{user_id}"
+            else:
+                continue
 
         def integer(key: str) -> int:
             try:

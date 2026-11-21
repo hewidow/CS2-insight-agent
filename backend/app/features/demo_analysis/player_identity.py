@@ -33,6 +33,23 @@ def steam_player_key(steamid: object) -> str:
     return f"steamid:{value}" if value else ""
 
 
+def placeholder_player_name(steamid: object = None, user_id: object = None) -> str:
+    """Stable display name for a player whose nickname is empty in the Demo.
+
+    CS2 can expose an empty nickname for a real participant (for example while
+    the userinfo string is being updated, or for demos written by older/newer
+    game builds).  Such a player still has a SteamID/user id, so keep them in
+    the roster and give the UI something selectable to show.
+    """
+    sid = _positive_int_text(steamid)
+    if len(sid) >= 16:
+        return f"未知玩家 {sid[-8:]}"
+    uid = _positive_int_text(user_id)
+    if uid:
+        return f"未知玩家 UID{uid}"
+    return ""
+
+
 def player_key_for_values(
     name: object,
     steamid: object = None,
@@ -93,10 +110,12 @@ def _frame_observations(frame: Optional[pd.DataFrame]) -> list[tuple[str, str, s
             if name_column not in columns:
                 continue
             name = _text(row.get(name_column))
-            if not name:
-                continue
             steamid = _positive_int_text(_first_value(row, steam_columns))
             user_id = _positive_int_text(_first_value(row, uid_columns))
+            if not name:
+                name = placeholder_player_name(steamid, user_id)
+            if not name:
+                continue
             observations.append((name, steamid, user_id))
     return observations
 
@@ -171,6 +190,11 @@ class PlayerIdentityRegistry:
                     identity.steamid = resolved_steamid
                 if not identity.user_id and user_id:
                     identity.user_id = user_id
+                # A blank player_info nickname creates a placeholder identity;
+                # upgrade it as soon as an event exposes the real nickname.
+                placeholder = placeholder_player_name(identity.steamid, identity.user_id)
+                if name and identity.display_name == placeholder:
+                    identity.display_name = name
 
         return cls(list(identities_by_key.values()))
 

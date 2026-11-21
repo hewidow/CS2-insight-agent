@@ -6,10 +6,12 @@ function normalizePlayer(player) {
   if (typeof player === "string") {
     return { name: player, key: player, suffix: "", team: 0, kills: 0, deaths: 0, assists: 0 };
   }
+  const name = playerDisplayName(player);
+  const suffix = playerIdentitySuffix(player);
   return {
-    name: playerDisplayName(player),
+    name: name || (suffix ? `未知玩家 ${suffix}` : "未知玩家"),
     key: playerIdentityKey(player),
-    suffix: playerIdentitySuffix(player),
+    suffix,
     team: Number(player.team ?? player.team_number) || 0,
     kills: Number(player.kills) || 0,
     deaths: Number(player.deaths) || 0,
@@ -63,7 +65,7 @@ function TeamBlock({ title, players, selected, onSelect, emptyLabel }) {
 
 export default function PlayerSelect({ players, selected, onSelect, onAnalyze, disabled }) {
   const t = useT();
-  const list = (players ?? []).map(normalizePlayer).filter((player) => player.name && player.key);
+  const list = (players ?? []).map(normalizePlayer).filter((player) => player.key);
   const selectedArr = Array.isArray(selected) ? selected : selected ? [selected] : [];
   const teamA = list.filter((player) => player.team === 3);
   const teamB = list.filter((player) => player.team === 2);

@@ -868,3 +868,23 @@ def test_batch_ingest_bounds_inspection_concurrency_and_reuses_rosters(
         for call in persist_ingest.await_args_list
     ] == ["match-1", "match-2", "match-3"]
     notify.assert_awaited_once_with("enqueue")
+
+
+def test_roster_rows_keep_blank_name_when_steamid_present():
+    rows = roster._roster_rows_for_api([
+        {
+            "player_name": "",
+            "team_number": 2,
+            "steam_id64": "76561198000000001",
+            "user_id": 3,
+            "kills": 5,
+            "deaths": 2,
+        },
+    ])
+
+    assert len(rows) == 1
+    assert rows[0]["name"] == "未知玩家 00000001"
+    assert rows[0]["player_key"] == "steamid:76561198000000001"
+    assert rows[0]["team"] == 2
+
+    assert roster._roster_rows_for_api([{"player_name": "", "team_number": 2}]) == []

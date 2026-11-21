@@ -8,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app import native_table as pd
 from app.features.demo_analysis.player_identity import PlayerIdentityRegistry
-from app.features.demo_analysis.player_roster import get_player_list
+from app.features.demo_analysis.player_roster import _build_all_players_roster, get_player_list
 
 
 SID_A = "76561198000000001"
@@ -226,3 +226,161 @@ def test_roster_drops_fake_steamid_placeholder_from_player_info():
         for row in rows
     )
     assert any(row["player_key"] == f"steamid:{SID_A}" for row in rows)
+
+
+def test_roster_keeps_player_with_empty_name_and_real_steamid():
+    """A blank nickname must not hide a player who still has a real SteamID."""
+    player_info = pd.DataFrame([
+        {"name": "", "steamid": SID_A, "team_number": 2},
+        {"name": "bravo", "steamid": SID_B, "team_number": 3},
+    ])
+    deaths = pd.DataFrame([
+        {
+            "tick": 100,
+            "attacker_name": "",
+            "attacker_steamid": SID_A,
+            "attacker_user_id": 10,
+            "attackerteam": 2,
+            "user_name": "bravo",
+            "user_steamid": SID_B,
+            "user_user_id": 20,
+            "userteam": 3,
+        },
+    ])
+
+    class Parser:
+        def parse_ticks(self, _fields, *, ticks):
+            tick = ticks[0]
+            return pd.DataFrame([
+                {
+                    "tick": tick,
+                    "name": "",
+                    "steamid": SID_A,
+                    "user_id": 10,
+                    "team_num": 2,
+                    "player_color": "blue",
+                },
+                {
+                    "tick": tick,
+                    "name": "bravo",
+                    "steamid": SID_B,
+                    "user_id": 20,
+                    "team_num": 3,
+                    "player_color": "orange",
+                },
+            ])
+
+        def parse_player_info(self):
+            return player_info
+
+    rows = get_player_list(
+        "blank-name.dem",
+        parser=Parser(),
+        match_start_tick=1,
+        death_events=deaths,
+        player_info_df=player_info,
+    )
+
+    by_key = {row["player_key"]: row for row in rows}
+    assert len(rows) == 2
+    blank = by_key[f"steamid:{SID_A}"]
+    assert blank["name"] == f"未知玩家 {SID_A[-8:]}"
+    assert blank["team"] == 2
+    assert (blank["kills"], blank["deaths"]) == (1, 0)
+    assert by_key[f"steamid:{SID_B}"]["name"] == "bravo"
+
+
+def test_roster_upgrades_placeholder_when_events_have_real_name():
+    """player_info can be blank while player_death still carries the nickname."""
+    player_info = pd.DataFrame([
+        {"name": "", "steamid": SID_A, "team_number": 2},
+        {"name": "bravo", "steamid": SID_B, "team_number": 3},
+    ])
+    deaths = pd.DataFrame([
+        {
+            "tick": 100,
+            "attacker_name": "alpha",
+            "attacker_steamid": SID_A,
+            "attacker_user_id": 10,
+            "attackerteam": 2,
+            "user_name": "bravo",
+            "user_steamid": SID_B,
+            "user_user_id": 20,
+            "userteam": 3,
+        },
+    ])
+
+    class Parser:
+        def parse_ticks(self, _fields, *, ticks):
+            tick = ticks[0]
+            return pd.DataFrame([
+                {
+                    "tick": tick,
+                    "name": "",
+                    "steamid": SID_A,
+                    "user_id": 10,
+                    "team_num": 2,
+                    "player_color": "blue",
+                },
+                {
+                    "tick": tick,
+                    "name": "bravo",
+                    "steamid": SID_B,
+                    "user_id": 20,
+                    "team_num": 3,
+                    "player_color": "orange",
+                },
+            ])
+
+        def parse_player_info(self):
+            return player_info
+
+    rows = get_player_list(
+        "blank-info.dem",
+        parser=Parser(),
+        match_start_tick=1,
+        death_events=deaths,
+        player_info_df=player_info,
+    )
+
+    by_key = {row["player_key"]: row for row in rows}
+    assert by_key[f"steamid:{SID_A}"]["name"] == "alpha"
+
+
+def test_shared_roster_keeps_blank_name_tick_row_with_steamid():
+    rows = pd.DataFrame([
+        {
+            "tick": 100,
+            "name": "",
+            "steamid": SID_A,
+            "user_id": 10,
+            "team_num": 2,
+            "player_color": "blue",
+        },
+        {
+            "tick": 100,
+            "name": "bravo",
+            "steamid": SID_B,
+            "user_id": 20,
+            "team_num": 3,
+            "player_color": "orange",
+        },
+    ])
+
+    class Parser:
+        def parse_ticks(self, _fields, *, ticks):
+            raise AssertionError("cached tick snapshot should be used")
+
+    roster = _build_all_players_roster(
+        Parser(),
+        100,
+        {},
+        {},
+        name_to_team_pi={},
+        player_ticks_df=rows,
+    )
+
+    by_sid = {str(player["steamid64"]): player for player in roster}
+    assert len(roster) == 2
+    assert by_sid[SID_A]["name"] == f"未知玩家 {SID_A[-8:]}"
+    assert by_sid[SID_A]["team_num"] == 2

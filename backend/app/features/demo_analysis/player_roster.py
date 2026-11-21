@@ -23,7 +23,11 @@ from .parse_utils import (
     _get_match_start_tick,
 )
 from .tag_constants import TICK_RATE
-from .player_identity import PlayerIdentityRegistry, player_key_for_values
+from .player_identity import (
+    PlayerIdentityRegistry,
+    placeholder_player_name,
+    player_key_for_values,
+)
 
 
 _PLAYER_COLOR_NAMES = ("blue", "green", "yellow", "orange", "purple")
@@ -344,6 +348,17 @@ def _lookup_steam_id_for_name(name_to_sid: dict[str, int], player_name: str) -> 
     return None
 
 
+def _lookup_name_for_steam_id(name_to_sid: dict[str, int], steamid: object) -> str:
+    """Recover a display name for a roster row whose own name cell is empty."""
+    target = _norm_steam_id(steamid)
+    if not target:
+        return ""
+    for name, sid in name_to_sid.items():
+        if _norm_steam_id(sid) == target and str(name).strip():
+            return str(name).strip()
+    return ""
+
+
 def _build_all_players_roster(
     parser: DemoParser,
     match_start_tick: int,
@@ -402,8 +417,7 @@ def _build_all_players_roster(
     seen: set[str] = set()
     for _, row in df.iterrows():
         name = str(row.get("name", "")).strip()
-        if not name or name in seen:
-            continue
+        row_sid = _steam_id_cell(row.get("steamid")) if "steamid" in df.columns else None
         team_num = row.get("team_num")
         try:
             team_num = int(team_num)
@@ -411,11 +425,28 @@ def _build_all_players_roster(
             team_num = 0
         if team_num not in (2, 3):
             continue
-        seen.add(name)
+        if not name:
+            # A real player can have an empty nickname while still carrying a
+            # valid SteamID (new/old Demo builds, name reset, ...).  Recover the
+            # name from events when possible, otherwise keep the row and give
+            # the UI a stable placeholder instead of dropping the player.
+            name = _lookup_name_for_steam_id(name_to_sid, row_sid) or placeholder_player_name(
+                row_sid, row.get("user_id")
+            )
+            if not name:
+                continue
+        seen_key = (
+            _norm_steam_id(row_sid)
+            if _is_real_steamid64(row_sid)
+            else f"name:{name.casefold()}"
+        )
+        if seen_key in seen:
+            continue
+        seen.add(seen_key)
         sid_int = (
             name_to_sid.get(name)
             or name_to_sid.get(name.lower())
-            or _steam_id_cell(row.get("steamid"))
+            or row_sid
         )
         players.append({
             "name": name,
@@ -445,6 +476,11 @@ def _build_all_players_roster(
             candidate_names.extend(str(name).strip() for name in name_to_sid)
             candidate_names.extend(str(name).strip() for name in spec_slots)
             existing = {str(player["name"]).strip().lower() for player in players}
+            existing_sids = {
+                _norm_steam_id(player.get("steamid64"))
+                for player in players
+                if _norm_steam_id(player.get("steamid64"))
+            }
             for name in candidate_names:
                 name_key = name.lower()
                 if not name or name_key in existing:
@@ -452,13 +488,19 @@ def _build_all_players_roster(
                 tm = name_to_team_pi_resolved.get(name_key)
                 if tm not in (2, 3):
                     continue
-                existing.add(name_key)
                 sid_int = _lookup_steam_id_for_name(name_to_sid, name)
+                sid_key = _norm_steam_id(sid_int) if sid_int is not None else ""
+                if sid_key and sid_key in existing_sids:
+                    continue
+                existing.add(name_key)
+                if sid_key:
+                    existing_sids.add(sid_key)
                 players.append({
                     "name": name,
                     "steamid64": str(sid_int) if sid_int is not None else "",
                     "spec_slot": spec_slots.get(name.lower()),
                     "team_num": tm,
+                    "player_color": None,
                 })
     return players
 
@@ -774,9 +816,12 @@ def get_player_list(
             return "", {}
         rec = stats.get(key)
         if rec is None:
+            display_name = identity.display_name if identity is not None else name
+            if not display_name:
+                display_name = placeholder_player_name(sid, uid)
             rec = {
                 "player_key": key,
-                "name": identity.display_name if identity is not None else name,
+                "name": display_name,
                 "steam_id": identity.steamid if identity is not None else (_norm_steam_id(sid) or None),
                 "event_user_id": (
                     _user_id_cell(identity.user_id) if identity is not None else _user_id_cell(uid)
@@ -803,7 +848,7 @@ def get_player_list(
             name = _cell_str(row.get("name"))
             sid = _steam_id_cell(row.get("steamid")) if "steamid" in pi.columns else None
             team = _cell_team(row.get(pi_team_col)) if pi_team_col else None
-            if not name or team not in (2, 3):
+            if team not in (2, 3):
                 continue
             if "steamid" in pi.columns and not _is_real_steamid64(sid):
                 continue
@@ -825,9 +870,15 @@ def get_player_list(
         vic_team = _cell_team(row.get("userteam"))
         ast_team = _cell_team(row.get(assister_team_col)) if assister_team_col else None
 
-        attacker_key, attacker_rec = _touch(attacker, attacker_sid, attacker_uid) if attacker else ("", {})
-        victim_key, victim_rec = _touch(victim, victim_sid, victim_uid) if victim else ("", {})
-        assister_key, assister_rec = _touch(assister, assister_sid, assister_uid) if assister else ("", {})
+        attacker_key, attacker_rec = (
+            _touch(attacker, attacker_sid, attacker_uid) if attacker or attacker_sid or attacker_uid else ("", {})
+        )
+        victim_key, victim_rec = (
+            _touch(victim, victim_sid, victim_uid) if victim or victim_sid or victim_uid else ("", {})
+        )
+        assister_key, assister_rec = (
+            _touch(assister, assister_sid, assister_uid) if assister or assister_sid or assister_uid else ("", {})
+        )
         _set_team_if_missing(attacker_rec, atk_team)
         _set_team_if_missing(victim_rec, vic_team)
         _set_team_if_missing(assister_rec, ast_team)
@@ -862,15 +913,16 @@ def get_player_list(
             for _, r in fix_df.iterrows():
                 nm = _cell_str(r.get("name"))
                 tm = _cell_team(r.get("team_num"))
-                if not nm:
+                row_sid = r.get("steamid") if "steamid" in fix_df.columns else None
+                if not nm and not _is_real_steamid64(row_sid):
                     continue
                 identity = registry.identity_for_values(
                     nm,
-                    r.get("steamid"),
+                    row_sid,
                     r.get("user_id"),
                 )
                 key = identity.player_key if identity is not None else player_key_for_values(
-                    nm, r.get("steamid"), r.get("user_id")
+                    nm, row_sid, r.get("user_id")
                 )
                 rec = stats.get(key)
                 if rec is not None:
@@ -892,11 +944,11 @@ def get_player_list(
         key=lambda rec: (-int(rec["kills"]), str(rec["name"]).casefold(), str(rec["player_key"])),
     )
     for rec in ordered:
-        name = str(rec["name"])
         steam_id = str(rec.get("steam_id") or "") or None
         if steam_id and not _is_real_steamid64(steam_id):
             continue
         event_uid = _user_id_cell(rec.get("event_user_id"))
+        name = str(rec["name"] or "") or placeholder_player_name(steam_id, event_uid)
         rows.append(
             {
                 "name": name,
