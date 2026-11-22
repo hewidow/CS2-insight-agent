@@ -228,6 +228,70 @@ def test_roster_drops_fake_steamid_placeholder_from_player_info():
     assert any(row["player_key"] == f"steamid:{SID_A}" for row in rows)
 
 
+def test_blank_name_events_are_canonicalized_by_steamid():
+    """Empty event names must resolve to the placeholder identity, not disappear."""
+    player_info = pd.DataFrame([
+        {"name": "", "steamid": SID_A, "team_number": 2},
+        {"name": "bravo", "steamid": SID_B, "team_number": 3},
+    ])
+    deaths = pd.DataFrame([
+        {
+            "tick": 100,
+            "attacker_name": "",
+            "attacker_steamid": SID_A,
+            "attacker_user_id": 10,
+            "attackerteam": 2,
+            "user_name": "bravo",
+            "user_steamid": SID_B,
+            "user_user_id": 20,
+            "userteam": 3,
+        },
+    ])
+
+    registry = PlayerIdentityRegistry.from_frames(
+        player_info=player_info,
+        death_events=deaths,
+    )
+    assert registry.has_placeholder_names is True
+    registry.canonicalize_frame(deaths)
+
+    assert deaths["attacker_name"].tolist() == [f"未知玩家 {SID_A[-8:]}"]
+    assert deaths["user_name"].tolist() == ["bravo"]
+    target = registry.resolve_targets([f"steamid:{SID_A}"])[0]
+    assert target.analysis_name == f"未知玩家 {SID_A[-8:]}"
+
+
+def test_blank_event_name_uses_real_player_info_name():
+    """A blank name in an event row still maps to the player's known identity."""
+    player_info = pd.DataFrame([
+        {"name": "alpha", "steamid": SID_A, "team_number": 2},
+        {"name": "bravo", "steamid": SID_B, "team_number": 3},
+    ])
+    deaths = pd.DataFrame([
+        {
+            "tick": 100,
+            "attacker_name": "",
+            "attacker_steamid": SID_A,
+            "attacker_user_id": 10,
+            "attackerteam": 2,
+            "user_name": "bravo",
+            "user_steamid": SID_B,
+            "user_user_id": 20,
+            "userteam": 3,
+        },
+    ])
+
+    registry = PlayerIdentityRegistry.from_frames(
+        player_info=player_info,
+        death_events=deaths,
+    )
+    assert registry.has_placeholder_names is False
+    assert registry.has_blank_names is True
+    registry.canonicalize_frame(deaths)
+
+    assert deaths["attacker_name"].tolist() == ["alpha"]
+
+
 def test_roster_keeps_player_with_empty_name_and_real_steamid():
     """A blank nickname must not hide a player who still has a real SteamID."""
     player_info = pd.DataFrame([

@@ -72,6 +72,7 @@ class PlayerIdentity:
     steamid: str = ""
     user_id: str = ""
     analysis_name: str = ""
+    blank_name_seen: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,10 +101,10 @@ def _first_value(row: dict[str, Any], columns: Iterable[str]) -> object:
     return None
 
 
-def _frame_observations(frame: Optional[pd.DataFrame]) -> list[tuple[str, str, str]]:
+def _frame_observations(frame: Optional[pd.DataFrame]) -> list[tuple[str, str, str, bool]]:
     if frame is None or frame.empty:
         return []
-    observations: list[tuple[str, str, str]] = []
+    observations: list[tuple[str, str, str, bool]] = []
     columns = set(frame.columns)
     for _, row in frame.iterrows():
         for name_column, steam_columns, uid_columns in _ROLE_COLUMNS:
@@ -112,11 +113,12 @@ def _frame_observations(frame: Optional[pd.DataFrame]) -> list[tuple[str, str, s
             name = _text(row.get(name_column))
             steamid = _positive_int_text(_first_value(row, steam_columns))
             user_id = _positive_int_text(_first_value(row, uid_columns))
+            blank = not name
             if not name:
                 name = placeholder_player_name(steamid, user_id)
             if not name:
                 continue
-            observations.append((name, steamid, user_id))
+            observations.append((name, steamid, user_id, blank))
     return observations
 
 
@@ -166,12 +168,12 @@ class PlayerIdentityRegistry:
             *_frame_observations(death_events),
         ]
         uid_to_steamid: dict[str, str] = {}
-        for _name, steamid, user_id in observations:
+        for _name, steamid, user_id, _blank in observations:
             if steamid and user_id:
                 uid_to_steamid[user_id] = steamid
 
         identities_by_key: dict[str, PlayerIdentity] = {}
-        for name, steamid, user_id in observations:
+        for name, steamid, user_id, blank in observations:
             resolved_steamid = steamid or uid_to_steamid.get(user_id, "")
             key = player_key_for_values(name, resolved_steamid, user_id)
             if not key:
@@ -183,6 +185,7 @@ class PlayerIdentityRegistry:
                     display_name=name,
                     steamid=resolved_steamid,
                     user_id=user_id,
+                    blank_name_seen=blank,
                 )
                 identities_by_key[key] = identity
             else:
@@ -190,6 +193,7 @@ class PlayerIdentityRegistry:
                     identity.steamid = resolved_steamid
                 if not identity.user_id and user_id:
                     identity.user_id = user_id
+                identity.blank_name_seen = identity.blank_name_seen or blank
                 # A blank player_info nickname creates a placeholder identity;
                 # upgrade it as soon as an event exposes the real nickname.
                 placeholder = placeholder_player_name(identity.steamid, identity.user_id)
@@ -201,6 +205,27 @@ class PlayerIdentityRegistry:
     @property
     def has_name_collisions(self) -> bool:
         return any(len(identities) > 1 for identities in self.by_name.values())
+
+    @property
+    def has_placeholder_names(self) -> bool:
+        """True when a real participant was given a synthetic display name.
+
+        Such players have an empty nickname in the Demo, so event frames still
+        contain empty name cells even though the roster can show them.  The
+        frames must be canonicalized by SteamID/user id before analysis so
+        kills, deaths and round timeline entries are attributed to them.
+        """
+        return any(
+            identity.display_name == placeholder_player_name(
+                identity.steamid, identity.user_id
+            )
+            for identity in self.identities
+        )
+
+    @property
+    def has_blank_names(self) -> bool:
+        """True when any frame contained a blank nickname for a real player."""
+        return any(identity.blank_name_seen for identity in self.identities)
 
     def identity_for_values(
         self,
@@ -221,7 +246,9 @@ class PlayerIdentityRegistry:
         return self.by_analysis_name.get(_text(value).casefold())
 
     def canonicalize_frame(self, frame: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
-        if frame is None or frame.empty or not self.has_name_collisions:
+        if frame is None or frame.empty:
+            return frame
+        if not self.has_name_collisions and not self.has_placeholder_names and not self.has_blank_names:
             return frame
         columns = set(frame.columns)
         replacements: dict[str, list[object]] = {}

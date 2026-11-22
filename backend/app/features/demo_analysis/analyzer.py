@@ -952,7 +952,11 @@ class DemoAnalyzer:
                 death_events=_shared.get("events"),
             )
         )
-        if identity_registry.has_name_collisions:
+        if (
+            identity_registry.has_name_collisions
+            or identity_registry.has_placeholder_names
+            or identity_registry.has_blank_names
+        ):
             for frame_name in (
                 "events", "fire_df", "hurt_df", "equip_df", "pickup_df",
                 "planted_df", "defused_df", "bomb_exploded_df",
